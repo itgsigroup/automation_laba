@@ -130,11 +130,11 @@ def fetch_data():
 
     return df.dropna(subset=["Tgl"])
 
-# ============ NARRATIVE ============
-def build_narrative(df, label, date_range):
-    """Kesimpulan naratif per periode."""
+# ============ NARRATIVE + RANKING per periode ============
+def build_insight(df, label, date_range):
+    """Insight naratif + ranking Top 5 Sales & Brand + Top Profit & Top Rugi (nama saja)."""
     if len(df) == 0:
-        return f"{label}\nPeriode {date_range}: TIDAK ADA TRANSAKSI.\n"
+        return f"[ {label} ]\nPeriode: {date_range}\nTIDAK ADA TRANSAKSI di periode ini.\n"
 
     n         = len(df)
     omset     = df["TotalHarga"].sum()
@@ -145,131 +145,138 @@ def build_narrative(df, label, date_range):
     rugi_val  = df[df["LabaAdj"] < 0]["LabaAdj"].sum()
     profit_val= profit["LabaAdj"].sum()
 
-    top_brand = df.groupby("Brand")["LabaAdj"].sum().idxmax() if len(df) else "-"
-    top_sales = df.groupby("Nama Sales")["LabaAdj"].sum().idxmax() if "Nama Sales" in df.columns else "-"
-    worst_brand = df.groupby("Brand")["LabaAdj"].sum().idxmin() if len(df) else "-"
-
     lines = [
-        f"[ {label} ]",
+        f"===== INSIGHT {label} =====",
         f"Periode  : {date_range}",
         f"Transaksi: {n} invoice-item",
         f"Omset    : {rp(omset)}",
         f"Laba Net : {rp(laba)}  ({margin:+.1f}% dari omset)",
-        f"           -> Profit dari {len(profit)} item = {rp(profit_val)}",
-        f"           -> Rugi   dari {len(df)-len(profit)} item = {rp(rugi_val)}",
-        f"Rugi >5% : {len(rugi)} item butuh evaluasi",
+        f"  Profit: {len(profit)} item = {rp(profit_val)}",
+        f"  Rugi  : {len(df)-len(profit)} item = {rp(rugi_val)}",
+        f"Rugi >5%: {len(rugi)} item butuh evaluasi",
         f"",
         f"KESIMPULAN:",
     ]
 
-    # Narasi
     if margin > 15:
-        tone = f"Margin {margin:.1f}% SANGAT SEHAT."
+        tone = f"  Margin {margin:.1f}% SANGAT SEHAT."
     elif margin > 5:
-        tone = f"Margin {margin:.1f}% sehat, dalam target normal."
+        tone = f"  Margin {margin:.1f}% sehat, target normal."
     elif margin > 0:
-        tone = f"Margin {margin:.1f}% TIPIS — perlu pantau HPP."
+        tone = f"  Margin {margin:.1f}% TIPIS — pantau HPP."
     else:
-        tone = f"MARGIN NEGATIF ({margin:.1f}%) — periode ini RUGI."
+        tone = f"  MARGIN NEGATIF ({margin:.1f}%) — periode RUGI."
+    lines.append(tone)
 
-    lines.append(f"  {tone}")
-    lines.append(f"  Brand penyumbang laba terbesar : {top_brand}")
-    lines.append(f"  Brand penyumbang laba terkecil : {worst_brand}")
-    if top_sales != "-":
-        lines.append(f"  Sales terbaik periode ini      : {top_sales}")
-    if len(rugi):
-        lines.append(f"  Waspada: {len(rugi)} item margin di bawah -5% (detail lihat tabel/gambar).")
+    # === Ranking Sales ===
+    if "Nama Sales" in df.columns:
+        by_sales = (df.groupby("Nama Sales")
+                      .agg(Trx=("LabaAdj","count"),
+                           Omset=("TotalHarga","sum"),
+                           Laba=("LabaAdj","sum"))
+                      .sort_values("Laba", ascending=False).head(5))
+        if len(by_sales):
+            lines.append("")
+            lines.append("TOP 5 SALES:")
+            for i, (name, r) in enumerate(by_sales.iterrows(), 1):
+                m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+                lines.append(f"  {i}. {str(name)[:20]:<20} | {int(r['Trx']):>3} trx | Laba {rp(r['Laba'])} ({m:+.1f}%)")
+
+    # === Ranking Brand ===
+    by_brand = (df.groupby("Brand")
+                  .agg(Trx=("LabaAdj","count"),
+                       Omset=("TotalHarga","sum"),
+                       Laba=("LabaAdj","sum"))
+                  .sort_values("Laba", ascending=False).head(5))
+    if len(by_brand):
+        lines.append("")
+        lines.append("TOP 5 BRAND:")
+        for i, (name, r) in enumerate(by_brand.iterrows(), 1):
+            m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+            lines.append(f"  {i}. {str(name)[:15]:<15} | {int(r['Trx']):>3} trx | Laba {rp(r['Laba'])} ({m:+.1f}%)")
+
+    # === Top 3 Item Profit Terbesar ===
+    top_profit = df[df["LabaAdj"] > 0].sort_values("LabaAdj", ascending=False).head(3)
+    if len(top_profit):
+        lines.append("")
+        lines.append("TOP 3 ITEM PROFIT:")
+        for i, (_, r) in enumerate(top_profit.iterrows(), 1):
+            lines.append(f"  {i}. {str(r['Nama Barang'])[:40]} ({r['Brand']}) = {rp(r['LabaAdj'])} ({r['Margin']*100:+.1f}%)")
+
+    # === Top 3 Item Rugi Terbesar ===
+    top_rugi = df[df["Margin"] < LOSS_THRESHOLD].sort_values("LabaAdj").head(3)
+    if len(top_rugi):
+        lines.append("")
+        lines.append("TOP 3 ITEM RUGI (>5%):")
+        for i, (_, r) in enumerate(top_rugi.iterrows(), 1):
+            lines.append(f"  {i}. {str(r['Nama Barang'])[:40]} ({r['Brand']}) = {rp(r['LabaAdj'])} ({r['Margin']*100:+.1f}%)")
 
     return "\n".join(lines)
 
-# ============ DETAIL TEXT ============
-def build_details(df, label):
-    """Detail rugi & top profit dalam format tabel teks rapi."""
-    if len(df) == 0: return ""
-
-    def rows_of(sub, title, sign):
-        if len(sub) == 0: return ""
-        out = [f"\n--- {title} ---"]
-        for _, r in sub.iterrows():
-            tgl   = r["Tgl"].strftime("%d/%m/%y")
-            sales = str(r.get("Nama Sales","-"))[:15]
-            brand = str(r["Brand"])[:10]
-            barang= str(r["Nama Barang"])[:38]
-            out.append(
-                f"{sign} {tgl} | {sales:<15} | {brand:<10}\n"
-                f"    {barang}\n"
-                f"    Laba: {rp(r['LabaAdj']):>15}  ({r['Margin']*100:+.1f}%)"
-            )
-        return "\n".join(out)
-
-    losses  = df[df["Margin"] < LOSS_THRESHOLD].sort_values("LabaAdj").head(TOP_N)
-    profits = df[df["LabaAdj"] > 0].sort_values("LabaAdj", ascending=False).head(TOP_N)
-
-    txt = f"\n===== DETAIL {label} =====\n"
-    txt += rows_of(losses,  f"RUGI >5% (Top {len(losses)})", "[!]")
-    txt += rows_of(profits, f"TOP PROFIT (Top {len(profits)})", "[+]")
-    return txt
-
-# ============ IMAGE ============
-def make_table_image(df, title, out_path):
-    """Render detail rows sebagai PNG table."""
+# ============ IMAGE — full detail table ============
+def make_full_table_image(df, title, subtitle, out_path):
+    """Render SEMUA transaksi periode ini sebagai PNG dengan 12 kolom lengkap.
+       Row rugi >5% highlight merah, row profit tinggi highlight hijau, netral putih."""
     if len(df) == 0:
         return None
 
-    losses  = df[df["Margin"] < LOSS_THRESHOLD].sort_values("LabaAdj").head(TOP_N)
-    profits = df[df["LabaAdj"] > 0].sort_values("LabaAdj", ascending=False).head(TOP_N)
+    # Sort: rugi terbesar di atas, lalu profit tertinggi ke bawah
+    df_sorted = df.sort_values("LabaAdj").reset_index(drop=True)
 
-    cols = ["Tgl", "Sales", "Barang", "Brand", "Qty", "Omset", "Laba", "Margin"]
-    def row_of(r):
-        return [
-            r["Tgl"].strftime("%d/%m/%y"),
-            str(r.get("Nama Sales","-"))[:14],
-            str(r["Nama Barang"])[:38],
-            str(r["Brand"])[:9],
-            str(r.get("Kts (","")).strip(),
-            rp_short(r["TotalHarga"]),
-            rp_short(r["LabaAdj"]),
-            f"{r['Margin']*100:+.1f}%",
-        ]
+    cols = ["Sales", "Pelanggan", "Tgl Inv", "Kode Pric", "Nama Barang",
+            "Brand", "Kts", "Harga", "Total Harga", "HPP", "Laba", "Diskon"]
 
     rows, colors = [], []
-    if len(losses):
-        rows.append(["RUGI >5%","","","","","","",""])
-        colors.append(["#8B0000"]*8)
-        for _, r in losses.iterrows():
-            rows.append(row_of(r)); colors.append(["#FDECEA"]*8)
-    if len(profits):
-        rows.append(["TOP PROFIT","","","","","","",""])
-        colors.append(["#0B6623"]*8)
-        for _, r in profits.iterrows():
-            rows.append(row_of(r)); colors.append(["#E7F6E7"]*8)
+    for _, r in df_sorted.iterrows():
+        row = [
+            str(r.get("Nama Sales","-"))[:16],
+            str(r.get("Nama Pelanggan","-"))[:22],
+            r["Tgl"].strftime("%d/%m/%y") if pd.notna(r["Tgl"]) else "-",
+            str(r.get("Kode Pric","-"))[:18],
+            str(r.get("Nama Barang","-"))[:38],
+            str(r.get("Brand","-"))[:10],
+            str(r.get("Kts (","")).strip(),
+            rp_short(r.get("@Harga", 0) if not pd.isna(r.get("@Harga", 0)) else parse_rp(r.get("@Harga",""))),
+            rp_short(r["TotalHarga"]),
+            rp_short(r["HPP"]),
+            rp_short(r["LabaAdj"]),
+            rp_short(parse_rp(r.get("Diskon","0"))),
+        ]
+        # Warna row berdasarkan margin
+        if r["Margin"] < LOSS_THRESHOLD:
+            bg = "#FDECEA"   # merah muda (rugi >5%)
+        elif r["LabaAdj"] > 0 and r["Margin"] > 0.15:
+            bg = "#E7F6E7"   # hijau muda (profit >15%)
+        else:
+            bg = "#FFFFFF"   # netral
+        rows.append(row); colors.append([bg]*len(cols))
 
-    if not rows: return None
+    # Fix column "Harga" — pakai @Harga langsung sebagai string dulu
+    for i, (_, r) in enumerate(df_sorted.iterrows()):
+        harga_val = parse_rp(r.get("@Harga", "0"))
+        rows[i][7] = rp_short(harga_val)
 
-    fig_h = max(3, 0.42 * (len(rows)+2))
-    fig, ax = plt.subplots(figsize=(14, fig_h))
+    fig_h = max(3.5, 0.32 * (len(rows) + 3))
+    fig, ax = plt.subplots(figsize=(20, fig_h))
     ax.axis("off")
-    ax.set_title(title, fontsize=14, fontweight="bold", loc="left", pad=14)
+    ax.text(0, 1.0, title, fontsize=16, fontweight="bold", transform=ax.transAxes)
+    ax.text(0, 0.975, subtitle, fontsize=10, color="#555555", transform=ax.transAxes)
 
     tbl = ax.table(cellText=rows, colLabels=cols, cellColours=colors,
-                   colColours=["#2C3E50"]*len(cols), loc="center",
+                   colColours=["#1F3A5F"]*len(cols), loc="center",
                    cellLoc="left", colLoc="center")
-    tbl.auto_set_font_size(False); tbl.set_fontsize(9)
-    tbl.scale(1, 1.35)
+    tbl.auto_set_font_size(False); tbl.set_fontsize(8)
+    tbl.scale(1, 1.25)
     for i in range(len(cols)):
         tbl[0, i].set_text_props(color="white", fontweight="bold")
-    # Header rows (RUGI/TOP PROFIT) → white text
-    for ridx, row in enumerate(rows, start=1):
-        if row[0] in ("RUGI >5%", "TOP PROFIT"):
-            for c in range(len(cols)):
-                tbl[ridx, c].set_text_props(color="white", fontweight="bold")
 
-    col_widths = [0.07, 0.11, 0.30, 0.09, 0.05, 0.11, 0.11, 0.08]
+    # Lebar kolom (proporsi)
+    col_widths = [0.08, 0.12, 0.06, 0.10, 0.20, 0.07, 0.03, 0.07, 0.08, 0.07, 0.08, 0.04]
     for i, w in enumerate(col_widths):
         for j in range(len(rows)+1):
             tbl[j, i].set_width(w)
 
-    plt.savefig(out_path, dpi=140, bbox_inches="tight", facecolor="white")
+    plt.savefig(out_path, dpi=130, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return out_path
 
@@ -457,41 +464,25 @@ def main():
                   f"{now.strftime('%A, %d %b %Y  %H:%M')}\n"
                   f"{'='*40}\n"
                   f"Rebate 5% aktif untuk brand: {', '.join(REBATE_BRANDS)}\n"
-                  f"Threshold rugi: margin di bawah -5%\n")
+                  f"Threshold rugi: margin di bawah -5%\n"
+                  f"3 periode: Hari Ini | 7 Hari Terakhir | Bulan Ini\n")
         send_text(header)
 
-        # === PER PERIODE: naratif + detail teks + gambar ===
+        # === PER PERIODE: kirim GAMBAR full detail + INSIGHT text ===
         for label, d1, d2, sub in periods:
             date_range = f"{d1.strftime('%d %b %Y')} - {d2.strftime('%d %b %Y')}"
-            narrative = build_narrative(sub, label, date_range)
-            details   = build_details(sub, label)
-            send_text(narrative + "\n" + details)
 
+            # 1) Kirim gambar detail lengkap (12 kolom, semua transaksi periode)
             if len(sub):
                 img_path = IMG_DIR / f"report_{label.replace(' ','_')}_{today}.png"
-                title = f"{label}   |   {date_range}"
-                if make_table_image(sub, title, img_path):
-                    send_photo(img_path, caption=f"Detail Tabel: {label}")
+                title = f"DETAIL {label}"
+                subtitle = f"Periode: {date_range}   |   {len(sub)} transaksi"
+                if make_full_table_image(sub, title, subtitle, img_path):
+                    send_photo(img_path, caption=f"{label} — {date_range}")
 
-        # === FOOTER: ringkasan sales & brand keseluruhan ===
-        month_df = periods[2][3]
-        if len(month_df):
-            foot = [f"\nRANKING BULAN {month_start.strftime('%b %Y').upper()}", "="*40]
-            by_sales = (month_df.groupby("Nama Sales")
-                        .agg(Trx=("LabaAdj","count"), Omset=("TotalHarga","sum"), Laba=("LabaAdj","sum"))
-                        .sort_values("Laba", ascending=False).head(5))
-            foot.append("\nTOP 5 SALES:")
-            for name, r in by_sales.iterrows():
-                m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
-                foot.append(f"  {str(name)[:20]:<20} {int(r['Trx']):>4}trx  {rp(r['Omset']):>15}  Laba {rp(r['Laba'])} ({m:+.1f}%)")
-            by_brand = (month_df.groupby("Brand")
-                        .agg(Trx=("LabaAdj","count"), Omset=("TotalHarga","sum"), Laba=("LabaAdj","sum"))
-                        .sort_values("Laba", ascending=False).head(5))
-            foot.append("\nTOP 5 BRAND:")
-            for name, r in by_brand.iterrows():
-                m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
-                foot.append(f"  {str(name)[:15]:<15} {int(r['Trx']):>4}trx  {rp(r['Omset']):>15}  Laba {rp(r['Laba'])} ({m:+.1f}%)")
-            send_text("\n".join(foot))
+            # 2) Kirim insight naratif + ranking untuk periode ini
+            insight = build_insight(sub, label, date_range)
+            send_text(insight)
 
         email_flush()   # kirim semua konten sebagai 1 email dengan attachment
         log("Selesai.")

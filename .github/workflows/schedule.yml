@@ -1,0 +1,60 @@
+name: GSI Laba Rugi Report
+
+on:
+  schedule:
+    # Cron time UTC. WIB = UTC+7.
+    # 10:00 WIB = 03:00 UTC  |  16:00 WIB = 09:00 UTC
+    - cron: '0 3 * * *'
+    - cron: '0 9 * * *'
+  workflow_dispatch:   # tombol Run manual di web GitHub
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write service_account.json from secret
+        run: echo '${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+        continue-on-error: true
+
+      - name: Run report script
+        env:
+          # Telegram
+          TG_BOT_TOKEN:        ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_IDS:         ${{ secrets.TG_CHAT_IDS }}
+          # WhatsApp (Fonnte)
+          FONNTE_TOKEN:        ${{ secrets.FONNTE_TOKEN }}
+          WA_NUMBERS:          ${{ secrets.WA_NUMBERS }}
+          # Gmail
+          GMAIL_SENDER:        ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENTS:    ${{ secrets.EMAIL_RECIPIENTS }}
+          # Google Drive
+          GDRIVE_FOLDER_ID:    ${{ secrets.GDRIVE_FOLDER_ID }}
+          # Sheet
+          SHEET_ID:            ${{ secrets.SHEET_ID }}
+          SHEET_GID:           ${{ secrets.SHEET_GID }}
+        run: python gsi_report.py
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-logs-${{ github.run_id }}
+          path: |
+            report_log.txt
+            img/
+          retention-days: 7

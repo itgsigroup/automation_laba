@@ -1,0 +1,25 @@
+# Kredensial & data sensitif — JANGAN pernah masuk GitHub
+service_account.json
+*.env
+.env
+
+# Log & output
+report_log.txt
+run_log.txt
+img/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Windows batch (opsional — kalau mau tetap punya buat backup lokal, hapus baris di bawah)
+# run_report.bat
+# install_deps.bat

@@ -3,9 +3,11 @@ name: GSI Laba Rugi Report
 on:
   schedule:
     # Cron time UTC. WIB = UTC+7.
-    # 10:00 WIB = 03:00 UTC  |  16:00 WIB = 09:00 UTC
-    - cron: '0 3 * * *'
-    - cron: '0 9 * * *'
+    # Dimajukan 10 menit dari target agar tidak telat karena delay GitHub Actions (biasa 5-15 menit).
+    # Target 10:00 WIB → schedule 09:50 WIB = 02:50 UTC
+    # Target 16:00 WIB → schedule 15:50 WIB = 08:50 UTC
+    - cron: '50 2 * * *'
+    - cron: '50 8 * * *'
   workflow_dispatch:   # tombol Run manual di web GitHub
 
 jobs:

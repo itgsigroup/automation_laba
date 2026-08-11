@@ -139,138 +139,344 @@ def fetch_data():
 
     return df.dropna(subset=["Tgl"])
 
-# ============ INSIGHT BISNIS per periode ============
-def build_insight(df, label, date_range):
-    """Insight bisnis fokus laba rugi: ringkasan keuangan + analisis kontribusi + list item profit/rugi."""
-    if len(df) == 0:
-        return f"===== {label} =====\nPeriode: {date_range}\nTIDAK ADA TRANSAKSI.\n"
+# ============ INSIGHT — 3 layer sesuai fokus periode ============
+def _fmt_item_row(i, name, r, pad_name=42):
+    m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+    return f"  {i:>2}. {str(name)[:pad_name]:<{pad_name}} | {int(r['Qty']):>3}x | {rp(r['Laba'])} ({m:+.1f}%)"
 
-    n          = len(df)
-    omset      = df["TotalHarga"].sum()
-    hpp_total  = df["HPP"].sum()
-    laba       = df["LabaAdj"].sum()
-    laba_ori   = df["Laba"].sum()
-    rebate_tot = df["Rebate"].sum()
-    margin     = (laba/omset*100) if omset else 0
-    profit_df  = df[df["LabaAdj"] > 0]
-    rugi_df    = df[df["LabaAdj"] < 0]
-    rugi_berat = df[df["Margin"] < LOSS_THRESHOLD]
+def _agg_by_item(df):
+    return (df.groupby("Nama Barang")
+              .agg(Qty=("LabaAdj","count"), Omset=("TotalHarga","sum"), Laba=("LabaAdj","sum"))
+              .sort_values("Laba", ascending=False))
 
-    # === RINGKASAN KEUANGAN ===
-    lines = [
-        f"===== LAPORAN {label} =====",
-        f"Periode : {date_range}",
+def _agg_by_brand(df):
+    return (df.groupby("Brand")
+              .agg(Qty=("LabaAdj","count"), Omset=("TotalHarga","sum"), Laba=("LabaAdj","sum"))
+              .sort_values("Laba", ascending=False))
+
+def _recurring_loss(df, min_occurrence=2):
+    """Item yang muncul >= min_occurrence kali DAN mayoritas trx-nya rugi."""
+    if len(df) == 0: return pd.DataFrame()
+    g = df.groupby("Nama Barang").agg(
+        Total=("LabaAdj","count"),
+        RugiCount=("LabaAdj", lambda x: (x < 0).sum()),
+        LabaTot=("LabaAdj","sum"),
+        OmsetTot=("TotalHarga","sum"))
+    g = g[(g["Total"] >= min_occurrence) & (g["RugiCount"] >= g["Total"]*0.5)]
+    return g.sort_values("LabaTot").head(10)
+
+def _rebate_impact(df):
+    """Item Ezviz/Hikvision yang tanpa rebate akan rugi, tapi setelah rebate jadi profit."""
+    rebate_df = df[df["BrandLower"].isin([b.lower() for b in REBATE_BRANDS])]
+    if len(rebate_df) == 0:
+        return None
+    total_rebate  = rebate_df["Rebate"].sum()
+    tanpa_rebate  = (rebate_df["Laba"] < 0).sum()
+    setelah_reb   = (rebate_df["LabaAdj"] < 0).sum()
+    diselamatkan  = tanpa_rebate - setelah_reb
+    return {
+        "total_rebate": total_rebate,
+        "item_ezv_hik": len(rebate_df),
+        "rugi_tanpa_rebate": tanpa_rebate,
+        "rugi_setelah_rebate": setelah_reb,
+        "diselamatkan": diselamatkan,
+    }
+
+def _header_finansial(df, label, date_range):
+    """Bagian ringkasan keuangan universal untuk semua insight."""
+    n         = len(df)
+    omset     = df["TotalHarga"].sum()
+    hpp       = df["HPP"].sum()
+    laba      = df["LabaAdj"].sum()
+    margin    = (laba/omset*100) if omset else 0
+    return [
+        f"===== {label} =====",
+        f"Periode: {date_range}   |   {n} transaksi",
         f"",
         f"[ RINGKASAN KEUANGAN ]",
-        f"  Total Transaksi    : {n} invoice-item",
-        f"  Omset              : {rp(omset)}",
-        f"  HPP (Modal)        : {rp(hpp_total)}",
-        f"  Laba Original      : {rp(laba_ori)}",
-        f"  Rebate 5% (Ezv+Hik): {rp(rebate_tot)}",
-        f"  LABA NET FINAL     : {rp(laba)}",
-        f"  Margin             : {margin:+.2f}%",
+        f"  Omset          : {rp(omset)}",
+        f"  HPP (Modal)    : {rp(hpp)}",
+        f"  Gross Profit   : {rp(laba)}",
+        f"  Margin         : {margin:+.2f}%",
+    ], margin
+
+
+# ---------------- TODAY (Operational) — ringkas ----------------
+def build_insight_today(df, label, date_range):
+    if len(df) == 0:
+        return f"===== {label} =====\nPeriode: {date_range}\nTIDAK ADA TRANSAKSI HARI INI.\n"
+
+    lines, margin = _header_finansial(df, label, date_range)
+    by_item = _agg_by_item(df)
+    top_profit = by_item[by_item["Laba"] > 0].head(5)
+    rugi5 = df[df["Margin"] < LOSS_THRESHOLD]
+    total_untung = df[df["LabaAdj"] > 0]["LabaAdj"].sum()
+    total_rugi   = df[df["LabaAdj"] < 0]["LabaAdj"].sum()
+
+    lines += [
         f"",
-        f"[ ANALISIS BISNIS ]",
+        f"[ TOP 5 ITEM PALING UNTUNG ]",
+    ]
+    if len(top_profit):
+        for i, (name, r) in enumerate(top_profit.iterrows(), 1):
+            lines.append(_fmt_item_row(i, name, r))
+    else:
+        lines.append("  (tidak ada item profit hari ini)")
+
+    lines += [
+        f"",
+        f"[ RUGI >5% HARI INI ]",
+        f"  Jumlah transaksi: {len(rugi5)}",
+        f"  Total kerugian  : {rp(rugi5['LabaAdj'].sum() if len(rugi5) else 0)}",
+        f"  (Detail per item di GAMBAR TABEL RUGI >5%)",
     ]
 
-    # Analisis naratif business-focused
-    if margin > 20:
-        analisis = "Kinerja SANGAT BAIK. Margin di atas 20% menunjukkan pricing dan efisiensi HPP optimal."
-    elif margin > 10:
-        analisis = "Kinerja SEHAT. Margin di kisaran 10-20% berada dalam target industri distribusi CCTV."
-    elif margin > 5:
-        analisis = "Kinerja CUKUP. Margin single digit — pertimbangkan naikkan harga jual atau nego HPP."
-    elif margin > 0:
-        analisis = "Kinerja TIPIS. Margin dibawah 5% berisiko — evaluasi item dengan HPP tinggi."
-    else:
-        analisis = "PERINGATAN. Periode ini RUGI — evaluasi seluruh item dan kebijakan harga."
-    lines.append(f"  {analisis}")
-
-    # Kontribusi profit vs rugi
-    profit_val = profit_df["LabaAdj"].sum()
-    rugi_val   = rugi_df["LabaAdj"].sum()
-    lines.append(f"  Profit dari {len(profit_df)} item menyumbang {rp(profit_val)}.")
-    lines.append(f"  Rugi dari {len(rugi_df)} item mengurangi {rp(rugi_val)}.")
-    if len(rugi_berat):
-        pct_rugi = len(rugi_berat) / n * 100
-        lines.append(f"  {len(rugi_berat)} item ({pct_rugi:.1f}% dari total) rugi >5% — perlu tindakan segera.")
-
-    # === ITEM PENYUMBANG LABA (list agregat per barang) ===
-    by_barang = (df.groupby("Nama Barang")
-                   .agg(Qty=("LabaAdj","count"),
-                        Omset=("TotalHarga","sum"),
-                        Laba=("LabaAdj","sum"))
-                   .sort_values("Laba", ascending=False))
-    top_items_profit = by_barang[by_barang["Laba"] > 0].head(10)
-
-    if len(top_items_profit):
-        lines.append("")
-        lines.append(f"[ ITEM PENYUMBANG LABA (Top 10) ]")
-        for i, (name, r) in enumerate(top_items_profit.iterrows(), 1):
-            m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
-            lines.append(f"  {i:>2}. {str(name)[:42]:<42} | {int(r['Qty']):>3}x | {rp(r['Laba'])} ({m:+.1f}%)")
-
-    # Item rugi
-    loss_items = by_barang[by_barang["Laba"] < 0].sort_values("Laba").head(5)
-    if len(loss_items):
-        lines.append("")
-        lines.append(f"[ ITEM PENYEBAB RUGI (Top 5) ]")
-        for i, (name, r) in enumerate(loss_items.iterrows(), 1):
-            m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
-            lines.append(f"  {i}. {str(name)[:42]:<42} | {int(r['Qty']):>3}x | {rp(r['Laba'])} ({m:+.1f}%)")
-
-    # === RANKING SALES ===
-    if "Nama Sales" in df.columns:
-        by_sales = (df.groupby("Nama Sales")
-                      .agg(Trx=("LabaAdj","count"),
-                           Omset=("TotalHarga","sum"),
-                           Laba=("LabaAdj","sum"))
-                      .sort_values("Laba", ascending=False).head(5))
-        if len(by_sales):
-            lines.append("")
-            lines.append("[ TOP 5 SALES (kontribusi laba) ]")
-            for i, (name, r) in enumerate(by_sales.iterrows(), 1):
-                m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
-                lines.append(f"  {i}. {str(name)[:20]:<20} | {int(r['Trx']):>3} trx | Omset {rp(r['Omset'])} | Laba {rp(r['Laba'])} ({m:+.1f}%)")
-
-    # === RANKING BRAND ===
-    by_brand = (df.groupby("Brand")
-                  .agg(Trx=("LabaAdj","count"),
-                       Omset=("TotalHarga","sum"),
-                       Laba=("LabaAdj","sum"))
-                  .sort_values("Laba", ascending=False).head(5))
-    if len(by_brand):
-        lines.append("")
-        lines.append("[ TOP 5 BRAND (kontribusi laba) ]")
-        for i, (name, r) in enumerate(by_brand.iterrows(), 1):
-            m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
-            lines.append(f"  {i}. {str(name)[:15]:<15} | {int(r['Trx']):>3} trx | Omset {rp(r['Omset'])} | Laba {rp(r['Laba'])} ({m:+.1f}%)")
-
-    # === RANKING CUSTOMER ===
-    if "Nama Pelanggan" in df.columns:
-        by_cust = (df.groupby("Nama Pelanggan")
-                     .agg(Trx=("LabaAdj","count"),
-                          Omset=("TotalHarga","sum"),
-                          Laba=("LabaAdj","sum"))
-                     .sort_values("Laba", ascending=False).head(5))
-        if len(by_cust):
-            lines.append("")
-            lines.append("[ TOP 5 CUSTOMER (kontribusi laba) ]")
-            for i, (name, r) in enumerate(by_cust.iterrows(), 1):
-                m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
-                lines.append(f"  {i}. {str(name)[:24]:<24} | {int(r['Trx']):>3} trx | Laba {rp(r['Laba'])} ({m:+.1f}%)")
+    lines += ["", "[ INSIGHT OPERASIONAL ]"]
+    if len(top_profit):
+        best = top_profit.index[0]; best_val = top_profit.iloc[0]["Laba"]
+        lines.append(f"  Produk paling menghasilkan laba hari ini: '{str(best)[:50]}' ({rp(best_val)}).")
+    if margin < 5 and margin > 0:
+        lines.append(f"  PERHATIAN: margin hari ini hanya {margin:.1f}% - review pricing atau HPP.")
+    elif margin < 0:
+        lines.append(f"  ALERT: hari ini net RUGI {margin:.1f}% - butuh review segera.")
 
     return "\n".join(lines)
 
-# ============ IMAGE — full detail table ============
-def make_full_table_image(df, title, subtitle, out_path):
-    """Render SEMUA transaksi periode ini sebagai PNG dengan 12 kolom lengkap.
-       Row rugi >5% highlight merah, row profit tinggi highlight hijau, netral putih."""
+
+# ---------------- LAST 7 DAYS (Monitoring) — ringkas ----------------
+def build_insight_7d(df, label, date_range):
     if len(df) == 0:
+        return f"===== {label} =====\nPeriode: {date_range}\nTIDAK ADA TRANSAKSI.\n"
+
+    lines, margin = _header_finansial(df, label, date_range)
+    by_item = _agg_by_item(df)
+    top_profit = by_item[by_item["Laba"] > 0].head(5)
+    rugi5 = df[df["Margin"] < LOSS_THRESHOLD]
+    recurring  = _recurring_loss(df, min_occurrence=2)
+    reb = _rebate_impact(df)
+
+    lines += [f"", f"[ TOP 5 PROFIT ITEM ]"]
+    if len(top_profit):
+        for i, (name, r) in enumerate(top_profit.iterrows(), 1):
+            lines.append(_fmt_item_row(i, name, r))
+    else:
+        lines.append("  (tidak ada item profit)")
+
+    lines += [
+        f"",
+        f"[ RUGI >5% (7 HARI) ]",
+        f"  Jumlah transaksi: {len(rugi5)} ({(len(rugi5)/len(df)*100):.1f}% dari total)",
+        f"  Total kerugian  : {rp(rugi5['LabaAdj'].sum() if len(rugi5) else 0)}",
+        f"  (Detail per item di GAMBAR TABEL RUGI >5%)",
+    ]
+
+    lines += [f"", f"[ RECURRING LOSS — Item berulang-ulang rugi ]"]
+    if len(recurring):
+        for i, (name, r) in enumerate(recurring.head(5).iterrows(), 1):
+            lines.append(f"  {i}. {str(name)[:42]:<42} | {int(r['Total'])}x trx, {int(r['RugiCount'])}x rugi | {rp(r['LabaTot'])}")
+    else:
+        lines.append("  (tidak ada pola recurring loss di 7 hari terakhir)")
+
+    lines += [f"", f"[ DAMPAK REBATE HIKVISION & EZVIZ ]"]
+    if reb:
+        lines += [
+            f"  Total rebate diperoleh    : {rp(reb['total_rebate'])}",
+            f"  Diselamatkan rebate       : {reb['diselamatkan']} item (dari rugi jadi profit)",
+        ]
+
+    lines += ["", "[ INSIGHT MONITORING ]"]
+    if len(top_profit):
+        star = top_profit.index[0]
+        lines.append(f"  Item konsisten profit: '{str(star)[:50]}' ({int(top_profit.iloc[0]['Qty'])}x, {rp(top_profit.iloc[0]['Laba'])}).")
+    if len(recurring):
+        prob = recurring.index[0]
+        lines.append(f"  Item berulang rugi   : '{str(prob)[:50]}' — {int(recurring.iloc[0]['Total'])}x, {int(recurring.iloc[0]['RugiCount'])}x rugi.")
+        lines.append(f"  Rekomendasi: review harga jual atau stop pengadaan item recurring loss.")
+
+    return "\n".join(lines)
+
+
+# ---------------- LAST 30 DAYS (Business) — insight LENGKAP, no image ----------------
+def build_insight_30d(df, label, date_range):
+    if len(df) == 0:
+        return f"===== {label} =====\nPeriode: {date_range}\nTIDAK ADA TRANSAKSI.\n"
+
+    lines, margin = _header_finansial(df, label, date_range)
+    by_item  = _agg_by_item(df)
+    by_brand = _agg_by_brand(df)
+    top_profit_item = by_item[by_item["Laba"] > 0].head(3)   # 3 barang saja
+    top_loss_item   = by_item[by_item["Laba"] < 0].sort_values("Laba").head(5)   # 5 item paling rugi
+    rugi5    = df[df["Margin"] < LOSS_THRESHOLD]
+    recurring= _recurring_loss(df, min_occurrence=3)
+    reb      = _rebate_impact(df)
+
+    # Total agregat
+    total_untung = df[df["LabaAdj"] > 0]["LabaAdj"].sum()
+    total_rugi   = df[df["LabaAdj"] < 0]["LabaAdj"].sum()
+    n_untung     = (df["LabaAdj"] > 0).sum()
+    n_rugi       = (df["LabaAdj"] < 0).sum()
+
+    # === TOTAL UNTUNG & 3 ITEM PENYUMBANG ===
+    lines += [
+        f"",
+        f"[ TOTAL KEUNTUNGAN 30 HARI ]",
+        f"  Total profit     : {rp(total_untung)} dari {n_untung} transaksi",
+        f"",
+        f"  3 ITEM PENYUMBANG UNTUNG TERBESAR:",
+    ]
+    if len(top_profit_item):
+        for i, (name, r) in enumerate(top_profit_item.iterrows(), 1):
+            m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+            lines.append(f"    {i}. {str(name)[:50]}")
+            lines.append(f"       Qty {int(r['Qty'])}x  |  Omset {rp(r['Omset'])}  |  Laba {rp(r['Laba'])} ({m:+.1f}%)")
+
+    # === TOTAL RUGI & ITEM YANG PALING BANYAK RUGI ===
+    lines += [
+        f"",
+        f"[ TOTAL KERUGIAN 30 HARI ]",
+        f"  Total loss        : {rp(total_rugi)} dari {n_rugi} transaksi",
+        f"  Loss margin >5%   : {rp(rugi5['LabaAdj'].sum() if len(rugi5) else 0)} dari {len(rugi5)} transaksi ({(len(rugi5)/len(df)*100):.1f}%)",
+        f"",
+        f"  ITEM YANG PALING BANYAK MERUGI:",
+    ]
+    if len(top_loss_item):
+        for i, (name, r) in enumerate(top_loss_item.iterrows(), 1):
+            m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+            lines.append(f"    {i}. {str(name)[:50]}")
+            lines.append(f"       Qty {int(r['Qty'])}x  |  Omset {rp(r['Omset'])}  |  Loss {rp(r['Laba'])} ({m:+.1f}%)")
+    else:
+        lines.append("    (tidak ada item net-loss di 30 hari)")
+
+    # === RECURRING LOSS ===
+    lines += [f"", f"[ RECURRING LOSS (item berulang rugi min 3x) ]"]
+    if len(recurring):
+        for i, (name, r) in enumerate(recurring.head(5).iterrows(), 1):
+            lines.append(f"  {i}. {str(name)[:42]:<42} | {int(r['Total'])}x trx, {int(r['RugiCount'])}x rugi | {rp(r['LabaTot'])}")
+    else:
+        lines.append("  (tidak ada pattern recurring loss signifikan)")
+
+    # === BRAND ANALYSIS ===
+    profit_brand = by_brand[by_brand["Laba"] > 0].head(3)
+    loss_brand   = by_brand[by_brand["Laba"] < 0].sort_values("Laba").head(3)
+
+    lines += [f"", f"[ TOP 3 BRAND PALING UNTUNG ]"]
+    for i, (name, r) in enumerate(profit_brand.iterrows(), 1):
+        m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+        lines.append(f"  {i}. {str(name):<15} | {int(r['Qty']):>4} trx | Laba {rp(r['Laba'])} ({m:+.1f}%)")
+
+    lines += [f"", f"[ TOP 3 BRAND PALING RUGI ]"]
+    if len(loss_brand):
+        for i, (name, r) in enumerate(loss_brand.iterrows(), 1):
+            m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+            lines.append(f"  {i}. {str(name):<15} | {int(r['Qty']):>4} trx | Loss {rp(r['Laba'])} ({m:+.1f}%)")
+    else:
+        lines.append("  (semua brand net-profit)")
+
+    # === REBATE IMPACT ===
+    lines += [f"", f"[ DAMPAK REBATE HIKVISION & EZVIZ ]"]
+    if reb:
+        pct_rebate = (reb["total_rebate"]/df["LabaAdj"].sum()*100) if df["LabaAdj"].sum() else 0
+        lines += [
+            f"  Total rebate       : {rp(reb['total_rebate'])} ({pct_rebate:.1f}% dari laba net)",
+            f"  Item Ezviz/Hik     : {reb['item_ezv_hik']} transaksi",
+            f"  Diselamatkan rebate: {reb['diselamatkan']} item (dari rugi jadi profit)",
+        ]
+
+    # === REKOMENDASI ===
+    lines += ["", "[ REKOMENDASI BISNIS ]"]
+    if len(profit_brand):
+        b_star = profit_brand.index[0]; v = profit_brand.iloc[0]["Laba"]
+        lines.append(f"  1. Pertahankan stock & prioritas promo: brand {b_star} ({rp(v)}).")
+    if len(loss_brand):
+        b_worst = loss_brand.index[0]
+        lines.append(f"  2. Evaluasi supplier / diskon: brand {b_worst}.")
+    if len(top_loss_item):
+        item_worst = top_loss_item.index[0]
+        lines.append(f"  3. Item bermasalah: '{str(item_worst)[:45]}' — pertimbangkan naik harga atau stop pengadaan.")
+    if len(recurring) >= 3:
+        lines.append(f"  4. {len(recurring)} item recurring loss — audit pricing & sourcing.")
+    if margin < 10:
+        lines.append(f"  5. Margin {margin:.1f}% di bawah target industri (10-15%) — tinjau strategi pricing.")
+
+    return "\n".join(lines)
+
+
+# Dispatcher
+def build_insight(df, label, date_range):
+    """Route ke fungsi insight yang tepat berdasarkan label periode."""
+    if "HARI INI" in label:
+        return build_insight_today(df, label, date_range)
+    if "7 HARI" in label:
+        return build_insight_7d(df, label, date_range)
+    if "30 HARI" in label:
+        return build_insight_30d(df, label, date_range)
+    return build_insight_7d(df, label, date_range)  # fallback
+
+# ============ IMAGE — full detail table ============
+def make_loss_table_image(df, title, subtitle, out_path):
+    """Render HANYA transaksi rugi >5% dengan 9 kolom fokus:
+       Tanggal | Invoice | Sales | Customer | Nama Barang | Qty | Omset | Laba | Margin"""
+    losses = df[df["Margin"] < LOSS_THRESHOLD].sort_values("LabaAdj").reset_index(drop=True)
+    if len(losses) == 0:
         return None
 
-    # Sort: rugi terbesar di atas, lalu profit tertinggi ke bawah
+    cols = ["Tanggal", "Invoice", "Sales", "Customer", "Nama Barang", "Qty", "Omset", "Laba", "Margin"]
+
+    rows, colors = [], []
+    for _, r in losses.iterrows():
+        row = [
+            r["Tgl"].strftime("%d/%m/%y") if pd.notna(r["Tgl"]) else "-",
+            str(r.get("No. Inv","-"))[:18],
+            str(r.get("Nama Sales","-"))[:14],
+            str(r.get("Nama Pelanggan","-"))[:22],
+            str(r.get("Nama Barang","-"))[:38],
+            str(r.get("Kts (","")).strip(),
+            rp_short(r["TotalHarga"]),
+            rp_short(r["LabaAdj"]),
+            f"{r['Margin']*100:+.1f}%",
+        ]
+        # Warna intensitas merah berdasarkan margin
+        m = r["Margin"]
+        if m < -0.30:      bg = "#F8B4B4"   # merah kuat
+        elif m < -0.15:    bg = "#FBD3D3"   # merah sedang
+        else:              bg = "#FDECEA"   # merah muda
+        rows.append(row); colors.append([bg]*len(cols))
+
+    fig_h = max(3.5, 0.34 * (len(rows) + 3))
+    fig, ax = plt.subplots(figsize=(20, fig_h))
+    ax.axis("off")
+    ax.text(0, 1.0, title, fontsize=16, fontweight="bold", color="#8B0000", transform=ax.transAxes)
+    ax.text(0, 0.975, subtitle, fontsize=10, color="#555555", transform=ax.transAxes)
+
+    tbl = ax.table(cellText=rows, colLabels=cols, cellColours=colors,
+                   colColours=["#8B0000"]*len(cols), loc="center",
+                   cellLoc="left", colLoc="center")
+    tbl.auto_set_font_size(False); tbl.set_fontsize(9)
+    tbl.scale(1, 1.30)
+    for i in range(len(cols)):
+        tbl[0, i].set_text_props(color="white", fontweight="bold")
+
+    col_widths = [0.07, 0.11, 0.09, 0.15, 0.22, 0.04, 0.09, 0.09, 0.07]
+    for i, w in enumerate(col_widths):
+        for j in range(len(rows)+1):
+            tbl[j, i].set_width(w)
+
+    plt.savefig(out_path, dpi=100, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return out_path
+
+# --- STUB legacy (dipakai kalau perlu full table image untuk kebutuhan lain) ---
+def make_full_table_image(df, title, subtitle, out_path, max_rows=None):
+    """DEPRECATED: dulu untuk tabel semua transaksi. Sekarang pakai make_loss_table_image."""
+    if len(df) == 0:
+        return None
     df_sorted = df.sort_values("LabaAdj").reset_index(drop=True)
+    if max_rows and len(df_sorted) > max_rows:
+        rugi = df_sorted[df_sorted["Margin"] < LOSS_THRESHOLD]
+        profit_slots = max(1, max_rows - len(rugi))
+        profit = df_sorted[df_sorted["LabaAdj"] > 0].sort_values("LabaAdj", ascending=False).head(profit_slots)
+        df_sorted = pd.concat([rugi, profit]).drop_duplicates().reset_index(drop=True)
+        subtitle += f"   |   Ditampilkan: {len(df_sorted)} baris (lengkap di CSV)"
 
     cols = ["No. Inv", "Sales", "Customer", "Tgl", "Nama Barang",
             "Brand", "Kts", "Harga", "Total", "HPP", "Laba", "Diskon"]
@@ -318,8 +524,21 @@ def make_full_table_image(df, title, subtitle, out_path):
         for j in range(len(rows)+1):
             tbl[j, i].set_width(w)
 
-    plt.savefig(out_path, dpi=130, bbox_inches="tight", facecolor="white")
+    plt.savefig(out_path, dpi=100, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+    return out_path
+
+def export_csv(df, out_path):
+    """Export dataframe periode ke CSV untuk attach di email (jauh lebih ringan dari PNG)."""
+    if len(df) == 0: return None
+    cols_out = ["No. Inv", "Nama Sales", "Nama Pelanggan", "Tgl Inv",
+                "Kode Pric", "Nama Barang", "Brand", "Kts (",
+                "@Harga", "Total Harga", "BPP / HPP", "Laba", "Rebate", "LabaAdj", "Margin", "Diskon"]
+    cols_exist = [c for c in cols_out if c in df.columns]
+    df_out = df.sort_values("LabaAdj")[cols_exist].copy()
+    if "Margin" in df_out.columns:
+        df_out["Margin"] = (df_out["Margin"]*100).round(2).astype(str) + "%"
+    df_out.to_csv(out_path, index=False, encoding="utf-8-sig")
     return out_path
 
 # ============ SEND ============
@@ -363,12 +582,23 @@ def email_append_image(img_path, caption=""):
         _email_buffer["images"].append((str(img_path), caption))
         _email_buffer["body"].append(f"[Gambar: {caption}]")
 
+def email_append_file(file_path, caption=""):
+    """Attach file umum (CSV, dsb)."""
+    if ENABLE_EMAIL:
+        _email_buffer.setdefault("files", []).append((str(file_path), caption))
+
+# Batas aman email (Gmail limit 25MB, kita cap 20MB untuk safety)
+EMAIL_MAX_ATTACHMENT_MB = 5    # skip attach gambar > 5MB per file
+EMAIL_MAX_TOTAL_MB      = 20   # total semua attachment
+
 def email_flush():
     if not ENABLE_EMAIL or not EMAIL_RECIPIENTS: return
     import smtplib, ssl
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.mime.image import MIMEImage
+    from email.mime.base import MIMEBase
+    from email import encoders
 
     body = "\n".join(_email_buffer["body"])
     subject = f"GSI Laba Rugi Report - {datetime.now().strftime('%d %b %Y %H:%M')}"
@@ -377,28 +607,65 @@ def email_flush():
     msg["From"] = GMAIL_SENDER
     msg["To"]   = ", ".join(EMAIL_RECIPIENTS)
     msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
 
+    skipped_note = []
+    total_bytes  = 0
+    max_per_file = EMAIL_MAX_ATTACHMENT_MB * 1024 * 1024
+    max_total    = EMAIL_MAX_TOTAL_MB * 1024 * 1024
+
+    # Attach images (skip yang > 5MB atau kalau total sudah mendekati limit)
     for path, cap in _email_buffer["images"]:
         try:
+            size = Path(path).stat().st_size
+            if size > max_per_file:
+                skipped_note.append(f"[SKIP] {Path(path).name} ({size/1024/1024:.1f}MB) terlalu besar untuk email.")
+                continue
+            if total_bytes + size > max_total:
+                skipped_note.append(f"[SKIP] {Path(path).name} melebihi total limit email.")
+                continue
             with open(path, "rb") as f:
                 img = MIMEImage(f.read())
             img.add_header("Content-Disposition", "attachment", filename=Path(path).name)
             msg.attach(img)
+            total_bytes += size
         except Exception as e:
-            log(f"Email attach fail {path}: {e}")
+            log(f"Email attach image fail {path}: {e}")
+
+    # Attach files umum (CSV) — CSV kecil biasanya < 500KB, jarang skip
+    for path, cap in _email_buffer.get("files", []):
+        try:
+            size = Path(path).stat().st_size
+            if total_bytes + size > max_total:
+                skipped_note.append(f"[SKIP] {Path(path).name} melebihi total limit email.")
+                continue
+            with open(path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=Path(path).name)
+            msg.attach(part)
+            total_bytes += size
+        except Exception as e:
+            log(f"Email attach file fail {path}: {e}")
+
+    if skipped_note:
+        body += "\n\n" + "="*40 + "\nCATATAN:\n" + "\n".join(skipped_note)
+        body += "\n(File berukuran besar dapat dilihat di Telegram atau Google Drive folder GSI Report Images)"
+
+    msg.attach(MIMEText(body, "plain", "utf-8"))
 
     try:
         ctx = ssl.create_default_context()
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as srv:
             srv.login(GMAIL_SENDER, GMAIL_APP_PASSWORD)
             srv.sendmail(GMAIL_SENDER, EMAIL_RECIPIENTS, msg.as_string())
-        log(f"Email terkirim ke {len(EMAIL_RECIPIENTS)} recipient")
+        log(f"Email terkirim ke {len(EMAIL_RECIPIENTS)} recipient (total attachment ~{total_bytes/1024/1024:.1f}MB)")
     except Exception as e:
         log(f"Email FAIL: {e}")
 
     _email_buffer["body"].clear()
     _email_buffer["images"].clear()
+    _email_buffer["files"] = []
 
 # ============ GOOGLE DRIVE UPLOAD ============
 _gdrive_service = None
@@ -490,14 +757,14 @@ def main():
         df = fetch_data()
         now = datetime.now()
         today = now.date()
-        week_start  = today - timedelta(days=6)
-        month_start = today.replace(day=1)
+        week_start  = today - timedelta(days=6)   # 7 hari termasuk hari ini
+        month_start = today - timedelta(days=29)  # 30 hari termasuk hari ini
 
         periods = [
-            ("HARI INI", today, today, df[df["Tgl"].dt.date == today]),
-            ("7 HARI TERAKHIR", week_start, today,
+            ("HARI INI (Operational)", today, today, df[df["Tgl"].dt.date == today]),
+            ("7 HARI TERAKHIR (Monitoring)", week_start, today,
                 df[(df["Tgl"].dt.date >= week_start) & (df["Tgl"].dt.date <= today)]),
-            ("BULAN INI", month_start, today,
+            ("30 HARI TERAKHIR (Business)", month_start, today,
                 df[(df["Tgl"].dt.date >= month_start) & (df["Tgl"].dt.date <= today)]),
         ]
 
@@ -510,21 +777,31 @@ def main():
                   f"3 periode: Hari Ini | 7 Hari Terakhir | Bulan Ini\n")
         send_text(header)
 
-        # === PER PERIODE: kirim GAMBAR full detail + INSIGHT text ===
+        # === PER PERIODE: kirim INSIGHT text + GAMBAR RUGI >5% + CSV ===
         for label, d1, d2, sub in periods:
             date_range = f"{d1.strftime('%d %b %Y')} - {d2.strftime('%d %b %Y')}"
+            slug = label.split(" (")[0].replace(" ","_")
 
-            # 1) Kirim gambar detail lengkap (12 kolom, semua transaksi periode)
-            if len(sub):
-                img_path = IMG_DIR / f"report_{label.replace(' ','_')}_{today}.png"
-                title = f"DETAIL {label}"
-                subtitle = f"Periode: {date_range}   |   {len(sub)} transaksi"
-                if make_full_table_image(sub, title, subtitle, img_path):
-                    send_photo(img_path, caption=f"{label} — {date_range}")
-
-            # 2) Kirim insight naratif + ranking untuk periode ini
+            # 1) Insight text → semua channel (TG + WA + Email)
             insight = build_insight(sub, label, date_range)
             send_text(insight)
+
+            if len(sub):
+                # 2) GAMBAR khusus RUGI >5% (semua periode, kalau ada rugi)
+                rugi_count = (sub["Margin"] < LOSS_THRESHOLD).sum()
+                if rugi_count > 0:
+                    img_path = IMG_DIR / f"rugi_{slug}_{today}.png"
+                    title = f"TABEL RUGI >5% — {label}"
+                    subtitle = f"Periode: {date_range}   |   {rugi_count} transaksi rugi >5%"
+                    if make_loss_table_image(sub, title, subtitle, img_path):
+                        tg_send_photo(img_path, caption=f"Rugi >5% | {label}")
+                        wa_send_photo(img_path, caption=f"Rugi >5% | {label}")
+                        email_append_image(img_path, caption=f"Rugi >5% {label}")
+
+                # 3) CSV data lengkap → attach ke email saja
+                csv_path = IMG_DIR / f"data_{slug}_{today}.csv"
+                if export_csv(sub, csv_path):
+                    email_append_file(csv_path, caption=label)
 
         email_flush()   # kirim semua konten sebagai 1 email dengan attachment
         log("Selesai.")

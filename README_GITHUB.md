@@ -61,17 +61,17 @@ Buat secret satu per satu (klik New repository secret untuk tiap baris):
 
 | Name | Value |
 |------|-------|
-| `SHEET_ID` | `1Z7jYIRomStLa85IqYQlK2e33RKFglAi6_GfFchcjYr8` |
-| `SHEET_GID` | `202348666` |
-| `TG_BOT_TOKEN` | `8918248830:AAGWuHyIzu0DSDpBbVTgiZeIre4qi-iXcvE` |
-| `TG_CHAT_IDS` | `6400077082` (pisahkan koma kalau lebih dari 1) |
-| `FONNTE_TOKEN` | `CA3GP5mL69rSePSxC8oJ` |
-| `WA_NUMBERS` | `6285803643592,6288215320214` |
-| `GMAIL_SENDER` | `ai.gsigroup@gmail.com` |
-| `GMAIL_APP_PASSWORD` | `zbufwxnbinvnonuk` |
-| `EMAIL_RECIPIENTS` | `bi.gsigroup@gmail.com` (pisahkan koma kalau lebih dari 1) |
-| `GDRIVE_FOLDER_ID` | (folder ID dari Google Drive setelah setup Service Account) |
-| `GDRIVE_SERVICE_ACCOUNT_JSON` | (ISI SELURUH ISI FILE `service_account.json` — copy paste seluruh JSON-nya, ratusan baris) |
+| `SHEET_ID` | ID Google Sheet (dari URL: `docs.google.com/spreadsheets/d/{SHEET_ID}/...`) |
+| `SHEET_GID` | GID tab sheet (dari URL: `...#gid={SHEET_GID}`) |
+| `TG_BOT_TOKEN` | Bot token dari BotFather Telegram |
+| `TG_CHAT_IDS` | Chat ID Telegram (pisahkan koma kalau lebih dari 1) |
+| `FONNTE_TOKEN` | Token dari dashboard Fonnte device |
+| `WA_NUMBERS` | Nomor WA penerima format 628xxx (pisahkan koma) |
+| `GMAIL_SENDER` | Email Gmail pengirim |
+| `GMAIL_APP_PASSWORD` | App Password 16 karakter (tanpa spasi) |
+| `EMAIL_RECIPIENTS` | Email penerima (pisahkan koma) |
+| `GDRIVE_FOLDER_ID` | Folder ID Google Drive (opsional, untuk hosting gambar WA) |
+| `GDRIVE_SERVICE_ACCOUNT_JSON` | Isi lengkap file service_account.json (opsional) |
 
 ### Tips untuk `GDRIVE_SERVICE_ACCOUNT_JSON`
 

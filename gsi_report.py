@@ -32,31 +32,31 @@ def env_list(key, default_list, sep=","):
     return [x.strip() for x in v.split(sep) if x.strip()]
 
 # --- Google Sheet ---
-SHEET_ID   = env("SHEET_ID",  "1Z7jYIRomStLa85IqYQlK2e33RKFglAi6_GfFchcjYr8")
-SHEET_GID  = env("SHEET_GID", "202348666")
+SHEET_ID   = env("SHEET_ID",  "")
+SHEET_GID  = env("SHEET_GID", "0")
 CSV_URL    = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
 
 # --- Telegram ---
-BOT_TOKEN  = env("TG_BOT_TOKEN", "8918248830:AAGWuHyIzu0DSDpBbVTgiZeIre4qi-iXcvE")
-CHAT_IDS   = env_list("TG_CHAT_IDS", ["6400077082"])
+BOT_TOKEN  = env("TG_BOT_TOKEN", "")
+CHAT_IDS   = env_list("TG_CHAT_IDS", [])
 
 # --- Fonnte WhatsApp ---
-FONNTE_TOKEN = env("FONNTE_TOKEN", "CA3GP5mL69rSePSxC8oJ")
-WA_NUMBERS   = env_list("WA_NUMBERS", ["6285803643592", "6288215320214"])
-ENABLE_TELEGRAM = True
-ENABLE_WHATSAPP = True
+FONNTE_TOKEN = env("FONNTE_TOKEN", "")
+WA_NUMBERS   = env_list("WA_NUMBERS", [])
+ENABLE_TELEGRAM = bool(BOT_TOKEN and CHAT_IDS)
+ENABLE_WHATSAPP = bool(FONNTE_TOKEN and WA_NUMBERS)
 
 # Imgur fallback (opsional)
 IMGUR_CLIENT_ID = env("IMGUR_CLIENT_ID", "")
 
 # --- Email (Gmail SMTP) ---
-ENABLE_EMAIL       = True
-GMAIL_SENDER       = env("GMAIL_SENDER",       "ai.gsigroup@gmail.com")
-GMAIL_APP_PASSWORD = env("GMAIL_APP_PASSWORD", "zbufwxnbinvnonuk")
-EMAIL_RECIPIENTS   = env_list("EMAIL_RECIPIENTS", ["bi.gsigroup@gmail.com"])
+GMAIL_SENDER       = env("GMAIL_SENDER",       "")
+GMAIL_APP_PASSWORD = env("GMAIL_APP_PASSWORD", "")
+EMAIL_RECIPIENTS   = env_list("EMAIL_RECIPIENTS", [])
+ENABLE_EMAIL       = bool(GMAIL_SENDER and GMAIL_APP_PASSWORD and EMAIL_RECIPIENTS)
 
 # --- Google Drive (untuk hosting gambar WA + arsip) ---
-GDRIVE_FOLDER_ID   = env("GDRIVE_FOLDER_ID", "ISI_FOLDER_ID_DISINI")
+GDRIVE_FOLDER_ID   = env("GDRIVE_FOLDER_ID", "")
 GDRIVE_KEY_FILE    = str(BASE / "service_account.json")
 ENABLE_GDRIVE      = False   # otomatis True kalau folder ID + key file ada
 

@@ -2,6 +2,10 @@
 service_account.json
 *.env
 .env
+run_local.bat
+config_local.py
+weekly_out/
+weekly_log.txt
 
 # Log & output
 report_log.txt

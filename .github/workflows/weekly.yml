@@ -1,0 +1,59 @@
+name: GSI Weekly Sales Brief
+
+# Generate PDF weekly report + kirim ke Telegram/WA/Email dalam 1 workflow.
+# Pakai Gemini API untuk narrative AI (gratis).
+
+on:
+  schedule:
+    # Sabtu 20:00 WIB = 13:00 UTC. Dimajukan 15 menit sebagai buffer delay.
+    - cron: '45 12 * * 6'
+  workflow_dispatch:
+
+jobs:
+  weekly-brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run weekly report
+        env:
+          # Sheet
+          SHEET_ID:            ${{ secrets.SHEET_ID }}
+          SHEET_GID:           ${{ secrets.SHEET_GID }}
+          # Telegram
+          TG_BOT_TOKEN:        ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_IDS:         ${{ secrets.TG_CHAT_IDS }}
+          # WhatsApp
+          FONNTE_TOKEN:        ${{ secrets.FONNTE_TOKEN }}
+          WA_NUMBERS:          ${{ secrets.WA_NUMBERS }}
+          # Email
+          GMAIL_SENDER:        ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENTS:    ${{ secrets.EMAIL_RECIPIENTS }}
+          # AI Narrative (Gemini gratis)
+          GEMINI_API_KEY:      ${{ secrets.GEMINI_API_KEY }}
+          CLAUDE_API_KEY:      ${{ secrets.CLAUDE_API_KEY }}
+          AI_PROVIDER:         gemini
+        run: python weekly_report.py
+
+      - name: Upload PDF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-brief-${{ github.run_id }}
+          path: |
+            weekly_out/
+            weekly_log.txt
+          retention-days: 30

@@ -767,91 +767,114 @@ def main():
         df = fetch_data()
 
         # === TIMEZONE WIB (UTC+7) ===
-        # GitHub Actions runner pakai UTC; kita tambah 7 jam supaya jam sesuai WIB.
         now_wib = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=7)
         today   = now_wib.date()
         y1      = today - timedelta(days=1)   # H-1 (kemarin)
 
         # === TENTUKAN MODE BERDASARKAN JAM WIB ===
-        # Jam < 12  = mode PAGI (10:00)  → detail = kemarin (H-1) saja
-        # Jam >= 12 = mode SORE (16:00)  → detail = kemarin + hari ini (H-1 & H)
+        # Jam < 12  = mode PAGI (10:00)  → data kemarin (H-1)
+        # Jam >= 12 = mode SORE (16:00)  → data hari ini (H)
         hour_wib = now_wib.hour
         is_morning = hour_wib < 12
 
         if is_morning:
+            target_date = y1
             detail_label = f"LABA RUGI KEMARIN ({y1.strftime('%d %b %Y')})"
-            detail_d1, detail_d2 = y1, y1
-            detail_df = df[df["Tgl"].dt.date == y1]
-            mode_label = "REPORT PAGI (jam 10:00)"
+            mode_label   = "REPORT PAGI (jam 10:00) - Data KEMARIN"
         else:
-            detail_label = f"LABA RUGI KEMARIN & HARI INI ({y1.strftime('%d %b')} - {today.strftime('%d %b %Y')})"
-            detail_d1, detail_d2 = y1, today
-            detail_df = df[(df["Tgl"].dt.date >= y1) & (df["Tgl"].dt.date <= today)]
-            mode_label = "REPORT SORE (jam 16:00)"
+            target_date = today
+            detail_label = f"LABA RUGI HARI INI ({today.strftime('%d %b %Y')})"
+            mode_label   = "REPORT SORE (jam 16:00) - Data HARI INI"
 
-        week_start  = today - timedelta(days=6)   # 7 hari termasuk hari ini
-        month_start = today - timedelta(days=29)  # 30 hari termasuk hari ini
+        detail_df = df[df["Tgl"].dt.date == target_date]
 
+        week_start  = today - timedelta(days=6)
+        month_start = today - timedelta(days=29)
         df_7d  = df[(df["Tgl"].dt.date >= week_start)  & (df["Tgl"].dt.date <= today)]
         df_30d = df[(df["Tgl"].dt.date >= month_start) & (df["Tgl"].dt.date <= today)]
 
-        # === HEADER MESSAGE ===
-        header = (f"REPORT LABA RUGI GSI\n"
-                  f"{mode_label}\n"
-                  f"{now_wib.strftime('%A, %d %b %Y  %H:%M')} WIB\n"
-                  f"{'='*40}\n"
-                  f"Rebate 5% aktif untuk brand: {', '.join(REBATE_BRANDS)}\n"
-                  f"Threshold rugi: margin di bawah -5%\n")
-        send_text(header)
+        # === Filter rugi >5% dan Top 3 laba ===
+        rugi5    = detail_df[detail_df["Margin"] < LOSS_THRESHOLD].sort_values("LabaAdj")
+        by_item  = _agg_by_item(detail_df) if len(detail_df) else pd.DataFrame()
+        top3_laba = by_item[by_item["Laba"] > 0].head(3) if len(by_item) else pd.DataFrame()
 
-        # ==============================================================
-        # BAGIAN 1 — DETAIL LABA RUGI (kemarin, atau kemarin+hari ini)
-        #    → Insight ringkas + Gambar tabel rugi >5% + CSV
-        # ==============================================================
-        date_range_detail = f"{detail_d1.strftime('%d %b %Y')} - {detail_d2.strftime('%d %b %Y')}"
+        total_rugi  = rugi5["LabaAdj"].sum() if len(rugi5) else 0
 
-        # Insight ringkas (pakai template TODAY untuk fokus operasional)
-        insight = build_insight_today(detail_df, detail_label, date_range_detail)
-        send_text(insight)
+        # === HEADER + RINGKASAN ===
+        lines = [
+            f"REPORT LABA RUGI GSI",
+            f"{mode_label}",
+            f"{now_wib.strftime('%A, %d %b %Y  %H:%M')} WIB",
+            f"{'='*40}",
+            f"Rebate 5% aktif untuk: {', '.join(REBATE_BRANDS)}",
+            f"Threshold rugi: margin di bawah -5%",
+            f"",
+            f"===== {detail_label} =====",
+            f"Total transaksi periode : {len(detail_df)}",
+            f"Item RUGI >5%           : {len(rugi5)} transaksi",
+            f"TOTAL KERUGIAN >5%      : {rp(total_rugi)}",
+        ]
 
-        if len(detail_df):
-            rugi_count = (detail_df["Margin"] < LOSS_THRESHOLD).sum()
-            slug_detail = "kemarin" if is_morning else "kemarin_dan_hariini"
-
-            # Gambar tabel rugi >5%
-            if rugi_count > 0:
-                img_path = IMG_DIR / f"rugi_{slug_detail}_{today}.png"
-                title = f"TABEL RUGI >5% — {detail_label}"
-                subtitle = f"Periode: {date_range_detail}   |   {rugi_count} transaksi rugi >5%"
-                if make_loss_table_image(detail_df, title, subtitle, img_path):
-                    tg_send_photo(img_path, caption=f"Rugi >5% | {detail_label}")
-                    wa_send_photo(img_path, caption=f"Rugi >5% | {detail_label}")
-                    email_append_image(img_path, caption=f"Rugi >5% {detail_label}")
-
-            # CSV data lengkap → email saja
-            csv_path = IMG_DIR / f"data_{slug_detail}_{today}.csv"
-            if export_csv(detail_df, csv_path):
-                email_append_file(csv_path, caption=detail_label)
+        # === DETAIL TEXT PER TRANSAKSI RUGI >5% (di ATAS) ===
+        if len(rugi5) == 0:
+            lines += [f"", f"TIDAK ADA ITEM RUGI >5% pada periode ini. Kinerja aman."]
         else:
-            send_text("Tidak ada transaksi di periode ini.")
+            lines += [f"", f"[ DETAIL RUGI >5% — {len(rugi5)} transaksi ]"]
+            for i, (_, r) in enumerate(rugi5.iterrows(), 1):
+                tgl   = r["Tgl"].strftime("%d/%m/%y") if pd.notna(r["Tgl"]) else "-"
+                inv   = str(r.get("No. Inv","-"))
+                sales = str(r.get("Nama Sales","-"))
+                cust  = str(r.get("Nama Pelanggan","-"))
+                nama  = str(r.get("Nama Barang","-"))
+                qty   = str(r.get("Kts (","")).strip()
+                omset = rp(r["TotalHarga"])
+                laba  = rp(r["LabaAdj"])
+                m     = r["Margin"]*100
+                lines.append(f"")
+                lines.append(f"  {i}. {tgl} | Inv {inv}")
+                lines.append(f"     Sales: {sales}  |  Customer: {cust}")
+                lines.append(f"     Barang: {nama}")
+                lines.append(f"     Qty: {qty}  |  Omset: {omset}  |  Laba: {laba} ({m:+.1f}%)")
 
-        # ==============================================================
-        # BAGIAN 2 — INSIGHT 7 HARI (parameter/text only, NO image, NO csv)
-        # Toggle: SEND_7D_INSIGHT di atas untuk aktifkan
-        # ==============================================================
+            lines += [f"", f"(Detail juga tersedia di GAMBAR TABEL & CSV terlampir email)"]
+
+        # === TOP 3 LABA TERTINGGI (ringkas, di BAWAH) ===
+        if len(top3_laba):
+            lines += [f"", f"[ TOP 3 ITEM LABA TERTINGGI ]"]
+            for i, (name, r) in enumerate(top3_laba.iterrows(), 1):
+                m = (r["Laba"]/r["Omset"]*100) if r["Omset"] else 0
+                lines.append(f"  {i}. {str(name)[:45]}")
+                lines.append(f"     Qty {int(r['Qty'])}x  |  Laba {rp(r['Laba'])} ({m:+.1f}%)")
+        else:
+            lines += [f"", f"[ TOP 3 LABA ]", f"  (tidak ada item profit di periode ini)"]
+
+        send_text("\n".join(lines))
+
+        # === GAMBAR TABEL RUGI >5% + CSV ===
+        if len(rugi5) > 0:
+            slug_detail = "kemarin" if is_morning else "hariini"
+
+            img_path = IMG_DIR / f"rugi_{slug_detail}_{today}.png"
+            title = f"TABEL RUGI >5% — {detail_label}"
+            subtitle = f"{len(rugi5)} transaksi | Total kerugian: {rp(total_rugi)}"
+            if make_loss_table_image(detail_df, title, subtitle, img_path):
+                tg_send_photo(img_path, caption=f"Rugi >5% | {detail_label}")
+                wa_send_photo(img_path, caption=f"Rugi >5% | {detail_label}")
+                email_append_image(img_path, caption=f"Rugi >5% {detail_label}")
+
+            # CSV hanya item rugi >5% (bukan seluruh transaksi periode)
+            csv_path = IMG_DIR / f"rugi_{slug_detail}_{today}.csv"
+            if export_csv(rugi5, csv_path):
+                email_append_file(csv_path, caption=f"Rugi >5% {detail_label}")
+
+        # === Toggle 7 & 30 hari (default OFF, keep code) ===
         if SEND_7D_INSIGHT:
             range_7d = f"{week_start.strftime('%d %b %Y')} - {today.strftime('%d %b %Y')}"
-            insight_7d = build_insight_7d(df_7d, "7 HARI TERAKHIR (Monitoring)", range_7d)
-            send_text(insight_7d)
+            send_text(build_insight_7d(df_7d, "7 HARI TERAKHIR (Monitoring)", range_7d))
 
-        # ==============================================================
-        # BAGIAN 3 — INSIGHT 30 HARI (parameter/text only, NO image, NO csv)
-        # Toggle: SEND_30D_INSIGHT di atas untuk aktifkan
-        # ==============================================================
         if SEND_30D_INSIGHT:
             range_30d = f"{month_start.strftime('%d %b %Y')} - {today.strftime('%d %b %Y')}"
-            insight_30d = build_insight_30d(df_30d, "30 HARI TERAKHIR (Business)", range_30d)
-            send_text(insight_30d)
+            send_text(build_insight_30d(df_30d, "30 HARI TERAKHIR (Business)", range_30d))
 
         email_flush()
         log(f"Selesai. Mode: {mode_label}")
